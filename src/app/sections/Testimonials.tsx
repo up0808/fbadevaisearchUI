@@ -65,9 +65,12 @@ const testimonials: TestimonialProps[] = [
 
 export function Testimonials({ id }: AnimatedProps) {
   return (
-    <section 
+    <motion.section
       id={id}
       className="relative py-20 overflow-hidden bg-gradient-to-b from-white to-slate-50 dark:from-slate-950 dark:to-slate-900"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.6 }}
     >
       {/* Background decoration */}
       <div className="absolute inset-0 opacity-30">
@@ -232,6 +235,6 @@ export function Testimonials({ id }: AnimatedProps) {
           </div>
         </motion.div>
       </div>
-    </section>
+    </motion.section>
   );
-    }
+}
