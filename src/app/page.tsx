@@ -71,147 +71,185 @@ const Home = () => {
         ]);
 
         // Create URL with checkpoint ID if it exists
-        let url = `https://perplexity-api.onrender.com/chat_stream/${encodeURIComponent(userInput)}`;
+        let url = `https://api.aisearch.fbadevishant.qzz.io/chat_stream/${encodeURIComponent(userInput)}`;
         if (checkpointId) {
           url += `?checkpoint_id=${encodeURIComponent(checkpointId)}`;
         }
 
-        // Connect to SSE endpoint using EventSource
-        const eventSource = new EventSource(url);
+        // Use fetch with ReadableStream instead of EventSource to support custom headers
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${process.env.NEXT_PUBLIC_ADMIN_API_KEY}`,
+            'Accept': 'application/json',
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
         let streamedContent = "";
         let searchData = null;
-        let hasReceivedContent = false;
+        let buffer = "";
 
-        // Process incoming messages
-        eventSource.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
+        if (!reader) {
+          throw new Error("Response body is not readable");
+        }
 
-            if (data.type === 'checkpoint') {
-              // Store the checkpoint ID for future requests
-              setCheckpointId(data.checkpoint_id);
-            }
-            else if (data.type === 'content') {
-              streamedContent += data.content;
-              hasReceivedContent = true;
+        // Read the stream
+        while (true) {
+          const { done, value } = await reader.read();
+          
+          if (done) break;
 
-              // Update message with accumulated content
-              setMessages(prev =>
-                prev.map(msg =>
-                  msg.id === aiResponseId
-                    ? { ...msg, content: streamedContent, isLoading: false }
-                    : msg
-                )
-              );
-            }
-            else if (data.type === 'search_start') {
-              // Create search info with 'searching' stage
-              const newSearchInfo = {
-                stages: ['searching'],
-                query: data.query,
-                urls: []
-              };
-              searchData = newSearchInfo;
+          // Decode the chunk and add to buffer
+          buffer += decoder.decode(value, { stream: true });
+          
+          // Process complete SSE messages in buffer
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ""; // Keep incomplete line in buffer
 
-              // Update the AI message with search info
-              setMessages(prev =>
-                prev.map(msg =>
-                  msg.id === aiResponseId
-                    ? { ...msg, content: streamedContent, searchInfo: newSearchInfo, isLoading: false }
-                    : msg
-                )
-              );
-            }
-            else if (data.type === 'search_results') {
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const dataStr = line.slice(6); // Remove 'data: ' prefix
+              
+              if (dataStr === '[DONE]') {
+                // Stream complete
+                if (searchData) {
+                  const finalSearchInfo = {
+                    ...searchData,
+                    stages: [...searchData.stages, 'writing']
+                  };
+
+                  setMessages(prev =>
+                    prev.map(msg =>
+                      msg.id === aiResponseId
+                        ? { ...msg, searchInfo: finalSearchInfo, isLoading: false }
+                        : msg
+                    )
+                  );
+                }
+                continue;
+              }
+
               try {
-                // Parse URLs from search results
-                const urls = typeof data.urls === 'string' ? JSON.parse(data.urls) : data.urls;
+                const data = JSON.parse(dataStr);
 
-                // Update search info to add 'reading' stage (don't replace 'searching')
-                const newSearchInfo = {
-                  stages: searchData ? [...searchData.stages, 'reading'] : ['reading'],
-                  query: searchData?.query || "",
-                  urls: urls
-                };
-                searchData = newSearchInfo;
+                if (data.type === 'checkpoint') {
+                  // Store the checkpoint ID for future requests
+                  setCheckpointId(data.checkpoint_id);
+                }
+                else if (data.type === 'content') {
+                  streamedContent += data.content;
 
-                // Update the AI message with search info
-                setMessages(prev =>
-                  prev.map(msg =>
-                    msg.id === aiResponseId
-                      ? { ...msg, content: streamedContent, searchInfo: newSearchInfo, isLoading: false }
-                      : msg
-                  )
-                );
-              } catch (err) {
-                console.error("Error parsing search results:", err);
+                  // Update message with accumulated content
+                  setMessages(prev =>
+                    prev.map(msg =>
+                      msg.id === aiResponseId
+                        ? { ...msg, content: streamedContent, isLoading: false }
+                        : msg
+                    )
+                  );
+                }
+                else if (data.type === 'search_start') {
+                  // Create search info with 'searching' stage
+                  const newSearchInfo = {
+                    stages: ['searching'],
+                    query: data.query,
+                    urls: []
+                  };
+                  searchData = newSearchInfo;
+
+                  // Update the AI message with search info
+                  setMessages(prev =>
+                    prev.map(msg =>
+                      msg.id === aiResponseId
+                        ? { ...msg, content: streamedContent, searchInfo: newSearchInfo, isLoading: false }
+                        : msg
+                    )
+                  );
+                }
+                else if (data.type === 'search_results') {
+                  try {
+                    // Parse URLs from search results
+                    const urls = typeof data.urls === 'string' ? JSON.parse(data.urls) : data.urls;
+
+                    // Update search info to add 'reading' stage (don't replace 'searching')
+                    const newSearchInfo = {
+                      stages: searchData ? [...searchData.stages, 'reading'] : ['reading'],
+                      query: searchData?.query || "",
+                      urls: urls
+                    };
+                    searchData = newSearchInfo;
+
+                    // Update the AI message with search info
+                    setMessages(prev =>
+                      prev.map(msg =>
+                        msg.id === aiResponseId
+                          ? { ...msg, content: streamedContent, searchInfo: newSearchInfo, isLoading: false }
+                          : msg
+                      )
+                    );
+                  } catch (err) {
+                    console.error("Error parsing search results:", err);
+                  }
+                }
+                else if (data.type === 'search_error') {
+                  // Handle search error
+                  const newSearchInfo = {
+                    stages: searchData ? [...searchData.stages, 'error'] : ['error'],
+                    query: searchData?.query || "",
+                    error: data.error,
+                    urls: []
+                  };
+                  searchData = newSearchInfo;
+
+                  setMessages(prev =>
+                    prev.map(msg =>
+                      msg.id === aiResponseId
+                        ? { ...msg, content: streamedContent, searchInfo: newSearchInfo, isLoading: false }
+                        : msg
+                    )
+                  );
+                }
+                else if (data.type === 'end') {
+                  // When stream ends, add 'writing' stage if we had search info
+                  if (searchData) {
+                    const finalSearchInfo = {
+                      ...searchData,
+                      stages: [...searchData.stages, 'writing']
+                    };
+
+                    setMessages(prev =>
+                      prev.map(msg =>
+                        msg.id === aiResponseId
+                          ? { ...msg, searchInfo: finalSearchInfo, isLoading: false }
+                          : msg
+                      )
+                    );
+                  }
+                }
+              } catch (error) {
+                console.error("Error parsing event data:", error, dataStr);
               }
             }
-            else if (data.type === 'search_error') {
-              // Handle search error
-              const newSearchInfo = {
-                stages: searchData ? [...searchData.stages, 'error'] : ['error'],
-                query: searchData?.query || "",
-                error: data.error,
-                urls: []
-              };
-              searchData = newSearchInfo;
-
-              setMessages(prev =>
-                prev.map(msg =>
-                  msg.id === aiResponseId
-                    ? { ...msg, content: streamedContent, searchInfo: newSearchInfo, isLoading: false }
-                    : msg
-                )
-              );
-            }
-            else if (data.type === 'end') {
-              // When stream ends, add 'writing' stage if we had search info
-              if (searchData) {
-                const finalSearchInfo = {
-                  ...searchData,
-                  stages: [...searchData.stages, 'writing']
-                };
-
-                setMessages(prev =>
-                  prev.map(msg =>
-                    msg.id === aiResponseId
-                      ? { ...msg, searchInfo: finalSearchInfo, isLoading: false }
-                      : msg
-                  )
-                );
-              }
-
-              eventSource.close();
-            }
-          } catch (error) {
-            console.error("Error parsing event data:", error, event.data);
           }
-        };
+        }
 
-        // Handle errors
-        eventSource.onerror = (error) => {
-          console.error("EventSource error:", error);
-          eventSource.close();
+        // Mark as not loading when stream completes
+        setMessages(prev =>
+          prev.map(msg =>
+            msg.id === aiResponseId
+              ? { ...msg, isLoading: false }
+              : msg
+          )
+        );
 
-          // Only update with error if we don't have content yet
-          if (!streamedContent) {
-            setMessages(prev =>
-              prev.map(msg =>
-                msg.id === aiResponseId
-                  ? { ...msg, content: "Sorry, there was an error processing your request.", isLoading: false }
-                  : msg
-              )
-            );
-          }
-        };
-
-        // Listen for end event
-        eventSource.addEventListener('end', () => {
-          eventSource.close();
-        });
       } catch (error) {
-        console.error("Error setting up EventSource:", error);
+        console.error("Error with fetch stream:", error);
         setMessages(prev => [
           ...prev,
           {
