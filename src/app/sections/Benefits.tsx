@@ -1,6 +1,6 @@
 "use client";
 
-import { BenefitCard } from "@/components/sections/benefits/BenefitCard";
+import { BenefitCard } from "@/components/sections/benefit/BenefitCard";
 import type { BenefitProps } from "@/types";
 import type { AnimatedProps } from "@/types/motion";
 import { motion } from "framer-motion";
